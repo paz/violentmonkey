@@ -3,7 +3,7 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [master]
+    branches: [master, 'claude/**']
     tags-ignore:
       - 'v*' # version-tagged commits are releases which have their own workflow
     paths-ignore:
