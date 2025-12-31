@@ -163,6 +163,11 @@ import {
   SYNC_INITIALIZING,
   SYNC_UNAUTHORIZED,
 } from '@/background/sync/state-machine';
+import {
+  selectFolder,
+  revokeFolder,
+  checkFolderAccess,
+} from '../../utils/local-folder-helper';
 
 const SYNC_CURRENT = 'sync.current';
 const SYNC_NONE = {
@@ -205,11 +210,41 @@ function onSyncChange(e) {
   const { value } = e.target;
   options.set(SYNC_CURRENT, value);
 }
-function onAuthorize() {
-  sendCmdDirectly('SyncAuthorize');
+async function onAuthorize() {
+  // Handle folder auth type directly in page context
+  if (rAuthType.value === 'folder') {
+    try {
+      const result = await selectFolder();
+      if (result.success) {
+        // Mark as authorized in sync config
+        await sendCmdDirectly('SyncSetConfig', { authorized: true });
+        // Trigger sync state update
+        sendCmdDirectly('SyncGetStates');
+      }
+    } catch (error) {
+      console.error('[LocalFolder] Authorization failed:', error);
+      alert(`Failed to select folder: ${error.message}`);
+    }
+  } else {
+    sendCmdDirectly('SyncAuthorize');
+  }
 }
-function onRevoke() {
-  sendCmdDirectly('SyncRevoke');
+async function onRevoke() {
+  // Handle folder auth type directly in page context
+  if (rAuthType.value === 'folder') {
+    try {
+      await revokeFolder();
+      // Mark as unauthorized in sync config
+      await sendCmdDirectly('SyncSetConfig', { authorized: false });
+      // Trigger sync state update
+      sendCmdDirectly('SyncGetStates');
+    } catch (error) {
+      console.error('[LocalFolder] Revoke failed:', error);
+      alert(`Failed to revoke folder access: ${error.message}`);
+    }
+  } else {
+    sendCmdDirectly('SyncRevoke');
+  }
 }
 function onSync(mode) {
   sendCmdDirectly('SyncStart', mode);

@@ -1,9 +1,7 @@
 /**
  * Local Folder Sync Provider
  *
- * Uses File System Access API for script content storage
- * and browser.storage.sync for lightweight metadata.
- *
+ * Uses File System Access API for script content storage.
  * Enables integration with folder sync services like OneDrive for Business.
  */
 
@@ -14,7 +12,7 @@ const DB_VERSION = 1;
 const STORE_NAME = 'handles';
 const FOLDER_HANDLE_KEY = 'syncFolder';
 
-// Check if File System Access API is available
+// Check if File System Access API is available (only in page context)
 const isSupported = typeof window !== 'undefined' && 'showDirectoryPicker' in window;
 
 const LocalFolder = BaseService.extend({
@@ -42,13 +40,13 @@ const LocalFolder = BaseService.extend({
   async initialize() {
     BaseService.prototype.initialize.call(this);
 
-    if (!isSupported) {
-      this.logError(new Error('File System Access API is not supported in this browser'));
+    // Open IndexedDB for handle persistence
+    try {
+      this.db = await this._openDatabase();
+    } catch (error) {
+      console.warn('[LocalFolder] Failed to open database:', error);
       return;
     }
-
-    // Open IndexedDB for handle persistence
-    this.db = await this._openDatabase();
 
     // Try to restore previously granted handle
     try {
@@ -57,6 +55,9 @@ const LocalFolder = BaseService.extend({
         const hasPermission = await this._checkPermission(handle);
         if (hasPermission) {
           this.directoryHandle = handle;
+          console.info('[LocalFolder] Restored folder handle with permissions');
+        } else {
+          console.info('[LocalFolder] Stored handle exists but permission denied');
         }
       }
     } catch (error) {
@@ -68,42 +69,37 @@ const LocalFolder = BaseService.extend({
    * Check if user has authorized (selected a folder)
    */
   hasAuth() {
-    return !!this.directoryHandle;
+    // Check config for auth flag (set by options page)
+    return this.config.get('authorized') || false;
   },
 
   /**
-   * Authorize - show folder picker
+   * Get user config
+   */
+  getUserConfig() {
+    return {
+      authorized: this.config.get('authorized') || false,
+    };
+  },
+
+  /**
+   * Set user config
+   */
+  setUserConfig(config) {
+    if (typeof config.authorized !== 'undefined') {
+      this.config.set('authorized', config.authorized);
+    }
+  },
+
+  /**
+   * Authorize - signal that user needs to select folder in page context
+   * This is called from background, so we just set a flag
    */
   async authorize() {
-    if (!isSupported) {
-      throw new Error('File System Access API is not supported in this browser');
-    }
-
-    try {
-      // Show folder picker
-      const handle = await window.showDirectoryPicker({
-        id: 'violentmonkey-sync',
-        mode: 'readwrite',
-        startIn: 'documents',
-      });
-
-      // Verify we can write to the folder
-      await this._validateFolder(handle);
-
-      // Store for persistence
-      await this._storeHandle(handle);
-      this.directoryHandle = handle;
-
-      console.info('[LocalFolder] Folder selected successfully');
-    } catch (error) {
-      if (error.name === 'AbortError') {
-        // User cancelled picker
-        console.info('[LocalFolder] Folder selection cancelled');
-        return;
-      }
-      this.logError(error);
-      throw error;
-    }
+    // This will be handled by the options page directly
+    // Just set a flag that authorization is needed
+    this.config.set('authNeeded', true);
+    console.info('[LocalFolder] Authorization requested - user should select folder in settings');
   },
 
   /**
@@ -112,7 +108,10 @@ const LocalFolder = BaseService.extend({
   async revoke() {
     await this._clearStoredHandle();
     this.directoryHandle = null;
-    this.config.clear();
+    this.config.set({
+      authorized: false,
+      authNeeded: false,
+    });
     console.info('[LocalFolder] Authorization revoked');
   },
 
@@ -121,6 +120,19 @@ const LocalFolder = BaseService.extend({
    */
   async requestAuth() {
     if (!this.directoryHandle) {
+      // Try to restore handle
+      try {
+        const handle = await this._getStoredHandle();
+        if (handle) {
+          const hasPermission = await this._checkPermission(handle);
+          if (hasPermission) {
+            this.directoryHandle = handle;
+            return { code: 0 }; // INIT_SUCCESS
+          }
+        }
+      } catch (error) {
+        console.warn('[LocalFolder] Failed to restore handle:', error);
+      }
       return { code: 1 }; // INIT_UNAUTHORIZED
     }
 
@@ -142,7 +154,11 @@ const LocalFolder = BaseService.extend({
    */
   async list() {
     if (!this.directoryHandle) {
-      throw new Error('No folder selected');
+      const handle = await this._getStoredHandle();
+      if (!handle) {
+        throw new Error('No folder selected');
+      }
+      this.directoryHandle = handle;
     }
 
     const files = [];
@@ -161,6 +177,14 @@ const LocalFolder = BaseService.extend({
    * Get script content from file
    */
   async get(item) {
+    if (!this.directoryHandle) {
+      const handle = await this._getStoredHandle();
+      if (!handle) {
+        throw new Error('No folder selected');
+      }
+      this.directoryHandle = handle;
+    }
+
     const name = getItemFilename(item);
     try {
       const fileHandle = await this.directoryHandle.getFileHandle(name);
@@ -168,7 +192,7 @@ const LocalFolder = BaseService.extend({
       return await file.text();
     } catch (error) {
       if (error.name === 'NotFoundError') {
-        // File doesn't exist
+        // File doesn't exist - this is normal for getMeta
         return null;
       }
       throw error;
@@ -179,6 +203,14 @@ const LocalFolder = BaseService.extend({
    * Write script content to file
    */
   async put(item, data) {
+    if (!this.directoryHandle) {
+      const handle = await this._getStoredHandle();
+      if (!handle) {
+        throw new Error('No folder selected');
+      }
+      this.directoryHandle = handle;
+    }
+
     const name = getItemFilename(item);
     try {
       const fileHandle = await this.directoryHandle.getFileHandle(name, { create: true });
@@ -196,6 +228,14 @@ const LocalFolder = BaseService.extend({
    * Delete script file
    */
   async remove(item) {
+    if (!this.directoryHandle) {
+      const handle = await this._getStoredHandle();
+      if (!handle) {
+        throw new Error('No folder selected');
+      }
+      this.directoryHandle = handle;
+    }
+
     const name = getItemFilename(item);
     try {
       await this.directoryHandle.removeEntry(name);
@@ -212,6 +252,7 @@ const LocalFolder = BaseService.extend({
   // ═══════════════════════════════════════════════════════════════════
 
   async _checkPermission(handle) {
+    if (!handle) return false;
     try {
       const permission = await handle.queryPermission({ mode: 'readwrite' });
       return permission === 'granted';
@@ -221,26 +262,12 @@ const LocalFolder = BaseService.extend({
   },
 
   async _requestPermission(handle) {
+    if (!handle) return false;
     try {
       const permission = await handle.requestPermission({ mode: 'readwrite' });
       return permission === 'granted';
     } catch {
       return false;
-    }
-  },
-
-  async _validateFolder(handle) {
-    // Try to create a test file to verify write access
-    const testFile = '.violentmonkey-test';
-    try {
-      const fileHandle = await handle.getFileHandle(testFile, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write('test');
-      await writable.close();
-      // Clean up
-      await handle.removeEntry(testFile);
-    } catch (error) {
-      throw new Error(`Cannot write to selected folder: ${error.message}`);
     }
   },
 
@@ -265,7 +292,9 @@ const LocalFolder = BaseService.extend({
   },
 
   async _storeHandle(handle) {
-    if (!this.db) return;
+    if (!this.db) {
+      this.db = await this._openDatabase();
+    }
     return new Promise((resolve, reject) => {
       const tx = this.db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
@@ -276,7 +305,9 @@ const LocalFolder = BaseService.extend({
   },
 
   async _getStoredHandle() {
-    if (!this.db) return null;
+    if (!this.db) {
+      this.db = await this._openDatabase();
+    }
     return new Promise((resolve, reject) => {
       const tx = this.db.transaction(STORE_NAME, 'readonly');
       const store = tx.objectStore(STORE_NAME);
@@ -287,7 +318,9 @@ const LocalFolder = BaseService.extend({
   },
 
   async _clearStoredHandle() {
-    if (!this.db) return;
+    if (!this.db) {
+      this.db = await this._openDatabase();
+    }
     return new Promise((resolve, reject) => {
       const tx = this.db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
@@ -298,10 +331,7 @@ const LocalFolder = BaseService.extend({
   },
 });
 
-// Only register if File System Access API is supported
-if (isSupported) {
-  register(LocalFolder);
-  console.info('[LocalFolder] Provider registered');
-} else {
-  console.warn('[LocalFolder] File System Access API not supported, provider not registered');
-}
+// Only register if running in a browser context
+// The File System Access API will only work in page context, not background
+register(LocalFolder);
+console.info('[LocalFolder] Provider registered');
