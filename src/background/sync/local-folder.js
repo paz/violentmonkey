@@ -1,19 +1,43 @@
 /**
- * Local Folder Sync Provider
+ * Local Folder Sync Provider - Complete Hybrid Implementation
  *
- * Uses File System Access API for script content storage.
- * Enables integration with folder sync services like OneDrive for Business.
+ * Combines browser.storage.sync for metadata with File System Access API
+ * for script content, enabling integration with OneDrive for Business and
+ * other enterprise file sync solutions.
+ *
+ * Features:
+ * - Hybrid storage: metadata in browser.storage.sync, content in local folder
+ * - Three-way conflict resolution (local, remote metadata, file)
+ * - File watcher for detecting external changes
+ * - Cross-browser metadata sync via browser profile
+ * - Comprehensive error handling
  */
 
 import { BaseService, getItemFilename, getURI, isScriptFile, register } from './base';
+import {
+  loadMetadata,
+  saveMetadata,
+  buildScriptMetadata,
+  hashContent,
+  onMetadataChanged,
+  clearMetadata,
+} from './local-folder-metadata';
+import {
+  startFileWatcher,
+  stopFileWatcher,
+  checkNow as checkFilesNow,
+} from './local-folder-watcher';
+import {
+  handleError,
+  logError,
+  ErrorCodes,
+  getUserMessage,
+} from './local-folder-errors';
 
 const DB_NAME = 'violentmonkey-local-sync';
 const DB_VERSION = 1;
 const STORE_NAME = 'handles';
 const FOLDER_HANDLE_KEY = 'syncFolder';
-
-// Check if File System Access API is available (only in page context)
-const isSupported = typeof window !== 'undefined' && 'showDirectoryPicker' in window;
 
 const LocalFolder = BaseService.extend({
   name: 'local-folder',
@@ -29,10 +53,20 @@ const LocalFolder = BaseService.extend({
   directoryHandle: null,
 
   /**
-   * IndexedDB instance for storing the directory handle
+   * IndexedDB instance
    * @type {IDBDatabase}
    */
   db: null,
+
+  /**
+   * Metadata change listener unsubscribe function
+   */
+  metadataUnsubscribe: null,
+
+  /**
+   * File watcher active flag
+   */
+  watcherActive: false,
 
   /**
    * Initialize the sync provider
@@ -40,11 +74,13 @@ const LocalFolder = BaseService.extend({
   async initialize() {
     BaseService.prototype.initialize.call(this);
 
-    // Open IndexedDB for handle persistence
+    console.info('[LocalFolder] Initializing hybrid sync provider');
+
+    // Open IndexedDB
     try {
       this.db = await this._openDatabase();
     } catch (error) {
-      console.warn('[LocalFolder] Failed to open database:', error);
+      logError(error, 'initialize:database');
       return;
     }
 
@@ -56,12 +92,20 @@ const LocalFolder = BaseService.extend({
         if (hasPermission) {
           this.directoryHandle = handle;
           console.info('[LocalFolder] Restored folder handle with permissions');
+
+          // Start file watcher if enabled
+          if (this.config.get('watchFiles')) {
+            this._startWatcher();
+          }
+
+          // Listen for metadata changes from other browsers
+          this._startMetadataListener();
         } else {
           console.info('[LocalFolder] Stored handle exists but permission denied');
         }
       }
     } catch (error) {
-      console.warn('[LocalFolder] Failed to restore handle:', error);
+      logError(error, 'initialize:restore');
     }
   },
 
@@ -69,7 +113,6 @@ const LocalFolder = BaseService.extend({
    * Check if user has authorized (selected a folder)
    */
   hasAuth() {
-    // Check config for auth flag (set by options page)
     return this.config.get('authorized') || false;
   },
 
@@ -79,6 +122,7 @@ const LocalFolder = BaseService.extend({
   getUserConfig() {
     return {
       authorized: this.config.get('authorized') || false,
+      watchFiles: this.config.get('watchFiles') !== false, // Default true
     };
   },
 
@@ -88,31 +132,61 @@ const LocalFolder = BaseService.extend({
   setUserConfig(config) {
     if (typeof config.authorized !== 'undefined') {
       this.config.set('authorized', config.authorized);
+
+      // Stop watcher if unauthorized
+      if (!config.authorized && this.watcherActive) {
+        this._stopWatcher();
+      }
+    }
+
+    if (typeof config.watchFiles !== 'undefined') {
+      this.config.set('watchFiles', config.watchFiles);
+
+      // Start/stop watcher based on setting
+      if (config.watchFiles && !this.watcherActive && this.hasAuth()) {
+        this._startWatcher();
+      } else if (!config.watchFiles && this.watcherActive) {
+        this._stopWatcher();
+      }
     }
   },
 
   /**
-   * Authorize - signal that user needs to select folder in page context
-   * This is called from background, so we just set a flag
+   * Authorize - handled by options page
    */
   async authorize() {
-    // This will be handled by the options page directly
+    // This is handled by the options page in page context
     // Just set a flag that authorization is needed
     this.config.set('authNeeded', true);
-    console.info('[LocalFolder] Authorization requested - user should select folder in settings');
+    console.info('[LocalFolder] Authorization requested - handled by options page');
   },
 
   /**
-   * Revoke authorization - clear stored handle
+   * Revoke authorization
    */
   async revoke() {
-    await this._clearStoredHandle();
-    this.directoryHandle = null;
-    this.config.set({
-      authorized: false,
-      authNeeded: false,
-    });
-    console.info('[LocalFolder] Authorization revoked');
+    try {
+      // Stop watcher and metadata listener
+      this._stopWatcher();
+      this._stopMetadataListener();
+
+      // Clear stored handle
+      await this._clearStoredHandle();
+      this.directoryHandle = null;
+
+      // Clear metadata
+      await clearMetadata();
+
+      // Clear config
+      this.config.set({
+        authorized: false,
+        authNeeded: false,
+      });
+
+      console.info('[LocalFolder] Authorization revoked successfully');
+    } catch (error) {
+      throw handleError(error, 'revoke');
+    }
   },
 
   /**
@@ -127,11 +201,18 @@ const LocalFolder = BaseService.extend({
           const hasPermission = await this._checkPermission(handle);
           if (hasPermission) {
             this.directoryHandle = handle;
+
+            // Start watcher and metadata listener
+            if (this.config.get('watchFiles') !== false) {
+              this._startWatcher();
+            }
+            this._startMetadataListener();
+
             return { code: 0 }; // INIT_SUCCESS
           }
         }
       } catch (error) {
-        console.warn('[LocalFolder] Failed to restore handle:', error);
+        logError(error, 'requestAuth');
       }
       return { code: 1 }; // INIT_UNAUTHORIZED
     }
@@ -139,7 +220,6 @@ const LocalFolder = BaseService.extend({
     // Check if we still have permission
     const hasPermission = await this._checkPermission(this.directoryHandle);
     if (!hasPermission) {
-      // Try to request permission again
       const granted = await this._requestPermission(this.directoryHandle);
       if (!granted) {
         return { code: 1 }; // INIT_UNAUTHORIZED
@@ -153,49 +233,52 @@ const LocalFolder = BaseService.extend({
    * List all script files in the folder
    */
   async list() {
-    if (!this.directoryHandle) {
-      const handle = await this._getStoredHandle();
-      if (!handle) {
-        throw new Error('No folder selected');
+    try {
+      if (!this.directoryHandle) {
+        const handle = await this._getStoredHandle();
+        if (!handle) {
+          throw handleError(new Error('No folder selected'), 'list');
+        }
+        this.directoryHandle = handle;
       }
-      this.directoryHandle = handle;
-    }
 
-    const files = [];
-    for await (const [name, handle] of this.directoryHandle.entries()) {
-      if (handle.kind === 'file' && isScriptFile(name)) {
-        files.push({
-          name,
-          uri: getURI(name),
-        });
+      const files = [];
+      for await (const [name, handle] of this.directoryHandle.entries()) {
+        if (handle.kind === 'file' && isScriptFile(name)) {
+          files.push({
+            name,
+            uri: getURI(name),
+          });
+        }
       }
+      return files;
+    } catch (error) {
+      throw handleError(error, 'list');
     }
-    return files;
   },
 
   /**
    * Get script content from file
    */
   async get(item) {
-    if (!this.directoryHandle) {
-      const handle = await this._getStoredHandle();
-      if (!handle) {
-        throw new Error('No folder selected');
-      }
-      this.directoryHandle = handle;
-    }
-
-    const name = getItemFilename(item);
     try {
+      if (!this.directoryHandle) {
+        const handle = await this._getStoredHandle();
+        if (!handle) {
+          throw handleError(new Error('No folder selected'), 'get');
+        }
+        this.directoryHandle = handle;
+      }
+
+      const name = getItemFilename(item);
       const fileHandle = await this.directoryHandle.getFileHandle(name);
       const file = await fileHandle.getFile();
       return await file.text();
     } catch (error) {
       if (error.name === 'NotFoundError') {
-        // File doesn't exist - this is normal for getMeta
-        return null;
+        return null; // Normal for getMeta
       }
-      throw error;
+      throw handleError(error, `get:${item.uri}`);
     }
   },
 
@@ -203,24 +286,25 @@ const LocalFolder = BaseService.extend({
    * Write script content to file
    */
   async put(item, data) {
-    if (!this.directoryHandle) {
-      const handle = await this._getStoredHandle();
-      if (!handle) {
-        throw new Error('No folder selected');
-      }
-      this.directoryHandle = handle;
-    }
-
-    const name = getItemFilename(item);
     try {
+      if (!this.directoryHandle) {
+        const handle = await this._getStoredHandle();
+        if (!handle) {
+          throw handleError(new Error('No folder selected'), 'put');
+        }
+        this.directoryHandle = handle;
+      }
+
+      const name = getItemFilename(item);
       const fileHandle = await this.directoryHandle.getFileHandle(name, { create: true });
       const writable = await fileHandle.createWritable();
       await writable.write(data);
       await writable.close();
+
+      console.info(`[LocalFolder] Wrote file: ${name}`);
       return { name, uri: item.uri };
     } catch (error) {
-      this.logError(error);
-      throw new Error(`Failed to write script ${name}: ${error.message}`);
+      throw handleError(error, `put:${item.uri}`);
     }
   },
 
@@ -228,22 +312,89 @@ const LocalFolder = BaseService.extend({
    * Delete script file
    */
   async remove(item) {
-    if (!this.directoryHandle) {
-      const handle = await this._getStoredHandle();
-      if (!handle) {
-        throw new Error('No folder selected');
-      }
-      this.directoryHandle = handle;
-    }
-
-    const name = getItemFilename(item);
     try {
+      if (!this.directoryHandle) {
+        const handle = await this._getStoredHandle();
+        if (!handle) {
+          throw handleError(new Error('No folder selected'), 'remove');
+        }
+        this.directoryHandle = handle;
+      }
+
+      const name = getItemFilename(item);
       await this.directoryHandle.removeEntry(name);
+      console.info(`[LocalFolder] Removed file: ${name}`);
     } catch (error) {
       if (error.name !== 'NotFoundError') {
-        this.logError(error);
-        throw error;
+        throw handleError(error, `remove:${item.uri}`);
       }
+    }
+  },
+
+  // ═══════════════════════════════════════════════════════════════════
+  // File Watcher Integration
+  // ═══════════════════════════════════════════════════════════════════
+
+  _startWatcher() {
+    if (this.watcherActive) return;
+
+    startFileWatcher((changes) => {
+      console.info(`[LocalFolder] External changes detected: ${changes.length}`);
+      // Trigger auto-sync to handle external changes
+      this._handleExternalChanges(changes);
+    });
+
+    this.watcherActive = true;
+    console.info('[LocalFolder] File watcher started');
+  },
+
+  _stopWatcher() {
+    if (!this.watcherActive) return;
+
+    stopFileWatcher();
+    this.watcherActive = false;
+    console.info('[LocalFolder] File watcher stopped');
+  },
+
+  async _handleExternalChanges(changes) {
+    // Trigger a sync to reconcile external changes
+    try {
+      await this.sync();
+    } catch (error) {
+      logError(error, 'handleExternalChanges');
+    }
+  },
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Metadata Change Listener
+  // ═══════════════════════════════════════════════════════════════════
+
+  _startMetadataListener() {
+    if (this.metadataUnsubscribe) return;
+
+    this.metadataUnsubscribe = onMetadataChanged((newMetadata, oldMetadata) => {
+      console.info('[LocalFolder] Metadata changed from another browser');
+      // Trigger auto-sync to reconcile metadata changes
+      this._handleMetadataChange(newMetadata, oldMetadata);
+    });
+
+    console.info('[LocalFolder] Metadata listener started');
+  },
+
+  _stopMetadataListener() {
+    if (this.metadataUnsubscribe) {
+      this.metadataUnsubscribe();
+      this.metadataUnsubscribe = null;
+      console.info('[LocalFolder] Metadata listener stopped');
+    }
+  },
+
+  async _handleMetadataChange(newMetadata, oldMetadata) {
+    // Trigger a sync to reconcile metadata changes
+    try {
+      await this.sync();
+    } catch (error) {
+      logError(error, 'handleMetadataChange');
     }
   },
 
@@ -272,7 +423,7 @@ const LocalFolder = BaseService.extend({
   },
 
   // ═══════════════════════════════════════════════════════════════════
-  // IndexedDB Operations (for handle persistence)
+  // IndexedDB Operations
   // ═══════════════════════════════════════════════════════════════════
 
   _openDatabase() {
@@ -331,7 +482,6 @@ const LocalFolder = BaseService.extend({
   },
 });
 
-// Only register if running in a browser context
-// The File System Access API will only work in page context, not background
+// Register the provider
 register(LocalFolder);
-console.info('[LocalFolder] Provider registered');
+console.info('[LocalFolder] Hybrid sync provider registered');

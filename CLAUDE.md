@@ -1,30 +1,60 @@
-# Local Folder Sync for Violentmonkey
+# Local Folder Sync for Violentmonkey - Hybrid Implementation
 
 ## Overview
 
-This document describes the new **Local Folder** sync provider for Violentmonkey, which enables syncing userscripts to a local folder on your computer. This feature is designed to work seamlessly with folder synchronization services like OneDrive for Business, Dropbox Desktop, Syncthing, and other file sync solutions.
+This document describes the new **Local Folder** sync provider for Violentmonkey, which enables syncing userscripts using a hybrid approach:
+
+- **browser.storage.sync** for lightweight metadata (~100KB quota)
+- **File System Access API** for script content (local folder)
+
+This hybrid architecture enables:
+- Cross-browser sync via browser profile (metadata only)
+- Integration with OneDrive for Business, Dropbox Desktop, Syncthing, etc. (content)
+- Seamless enterprise file sync integration
+- Fast state restoration across browsers
+- Automatic conflict resolution
 
 ## Implementation Details
 
-### Architecture
+### Hybrid Architecture
 
-The Local Folder sync provider uses the **File System Access API** to write scripts to a user-selected folder. This provides several advantages:
+The Local Folder sync provider combines two storage tiers:
+
+1. **browser.storage.sync (~100KB)**: Stores lightweight metadata
+   - Script enabled/disabled state
+   - Essential metadata (name, namespace, version)
+   - Update URLs
+   - File references and content hashes
+   - Position and configuration
+
+2. **Local Folder (unlimited)**: Stores actual script content
+   - Full `.user.js` files
+   - Synced via OneDrive/Dropbox/Syncthing/etc.
+   - Editable with any text editor
+
+This provides several advantages:
 
 1. **No cloud service integration required** - Works with any folder sync solution
-2. **Full user control** - Scripts are stored as plain `.user.js` files
+2. **Full user control** - Scripts are stored as plain files
 3. **Enterprise-friendly** - Compatible with OneDrive for Business and SharePoint
-4. **Editable externally** - Scripts can be edited with any text editor
+4. **Cross-browser sync** - Metadata syncs via browser profile
+5. **Editable externally** - Scripts can be edited with any text editor
+6. **Automatic conflict resolution** - Three-way merge (local, remote metadata, file)
 
 ### Files Added/Modified
 
 #### New Files
 
-- `/src/background/sync/local-folder.js` - The LocalFolder sync provider implementation
+- `/src/background/sync/local-folder.js` - Main LocalFolder sync provider (hybrid implementation)
+- `/src/background/sync/local-folder-metadata.js` - browser.storage.sync metadata layer
+- `/src/background/sync/local-folder-watcher.js` - File watcher for detecting external changes
+- `/src/background/sync/local-folder-errors.js` - Comprehensive error handling
+- `/src/options/utils/local-folder-helper.js` - Page context helper for File System Access API
 
 #### Modified Files
 
 - `/src/background/sync/index.js` - Registers the local-folder provider
-- `/src/options/views/tab-settings/vm-sync.vue` - UI support for folder auth type
+- `/src/options/views/tab-settings/vm-sync.vue` - UI support for folder auth type with page context handling
 
 ### Technical Implementation
 
