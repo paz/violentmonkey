@@ -1,224 +1,221 @@
 # Claude.md
 
-This document provides context about the Violentmonkey project to assist AI-powered development tools.
+This document contains mandatory rules and guidelines for AI agents working on the Violentmonkey codebase.
 
-## Project Overview
+## Mandatory Rules
 
-Violentmonkey is a browser extension that provides userscripts support for browsers using the WebExtensions API. It allows users to install, manage, and run userscripts that modify web page behavior.
+### Code Style - MUST Follow
 
-## Technology Stack
+You MUST strictly adhere to these code style requirements:
 
-- **Frontend Framework**: Vue 3 (Composition API)
-- **Build Tools**: Webpack 5, Gulp 4
-- **Testing**: Jest with custom test environment
-- **Code Quality**: ESLint, Prettier
-- **Package Manager**: Yarn v1.x
-- **Node Version**: >=20 (specified in package.json engines)
-- **Icons**: Iconify MDI set via unplugin-icons
-- **Editor**: CodeMirror 5 for script editing
+- **Indentation**: 2 spaces (never tabs)
+- **Line endings**: LF only
+- **Quotes**: Single quotes for strings
+- **Semicolons**: Required at end of statements
+- **Trailing whitespace**: Remove all trailing whitespace
+- **Final newline**: Every file must end with a newline
+- **ESLint**: All code must pass `yarn lint` without errors
 
-## Architecture
+### Before ANY Code Changes
 
-### Directory Structure
+1. **MUST read existing files** before editing them - never propose changes to unread code
+2. **MUST run `yarn ci`** before committing - this runs linting and tests
+3. **MUST preserve existing patterns** - study how similar features are implemented
+4. **MUST check ESLint rules** in `.eslintrc.js` for context-specific restrictions
 
-```
-src/
-├── background/       # Background page scripts (service workers)
-│   ├── plugin/      # Plugin system and event handling
-│   ├── sync/        # Cloud sync integrations (Google Drive, Dropbox, OneDrive, WebDAV)
-│   └── utils/       # Background utilities (update, requests, database, etc.)
-├── injected/        # Content scripts injected into web pages
-│   ├── content/     # Scripts running in content script context
-│   └── web/         # Scripts running in page context
-├── options/         # Options page (dashboard and settings)
-│   └── views/       # Vue components for settings, script editor, etc.
-├── popup/           # Browser action popup
-├── confirm/         # Script installation confirmation dialog
-├── common/          # Shared utilities and components
-│   └── ui/          # Reusable Vue components
-└── _locales/        # Internationalization files
-```
+### Commit Messages
 
-### Key Components
+Follow the repository's commit message style (check `git log` for examples):
 
-- **Background**: Manages script storage, updates, sync, and message passing
-- **Injected Content**: Bridges between web page and background
-- **Injected Web**: Executes userscripts in page context
-- **Options**: Full-featured dashboard for managing scripts
-- **Popup**: Quick access to enable/disable scripts per tab
+- Use imperative mood: "fix bug" not "fixed bug"
+- Be concise and descriptive
+- Reference issue numbers when applicable
+- Examples from this repo:
+  - `fix #2407: render all scripts after closing editor`
+  - `chore: update locale files from Transifex`
 
-## Code Style
+### Testing Requirements
 
-Following `.editorconfig` and `.eslintrc.js`:
+- **MUST write tests** for new features
+- **MUST run `yarn test`** and ensure all tests pass
+- **MUST NOT commit** if `yarn ci` fails
+- Tests live in `test/` directory
+- Use Jest with custom JSDOM environment
 
-- **Indentation**: 2 spaces
-- **Line endings**: LF
-- **Charset**: UTF-8
-- **Quotes**: Single quotes (enforced by editorconfig quote_type)
-- **Semicolons**: Required (ESLint rule)
-- **Trailing whitespace**: Removed
-- **Final newline**: Required
+### File Organization - Critical Rules
 
-### ESLint Rules
+#### Injected Scripts (`src/injected/**`)
 
-- `no-shadow`: Error
-- `no-unused-expressions`: Error
-- `no-use-before-define`: Error (functions allowed, classes/variables restricted)
-- `object-curly-newline`: Min 8 properties before requiring newlines
-- `semi`: Required
+- **NEVER import from `*/common`** - this is enforced by ESLint and will break the extension
+- Only use safe globals defined in `src/common/safe-globals-shared.js`
+- Web context (`src/injected/web/**`) has additional RegExp restrictions
+- These scripts run in untrusted page context - security is paramount
 
-### File-Specific Rules
+#### Common Files (`src/common/**`)
 
-- **Injected scripts**: Restricted imports, no common modules
-- **Web context**: Additional restrictions on RegExp usage
-- **Vue files**: Multi-word component names not required
+- Shared between background, content, and options pages
+- Must work in all contexts (background, content, popup, options)
+- No browser-specific APIs that aren't available everywhere
 
-## Development Workflow
+#### Vue Components
 
-### Setup
+- Use Vue 3 Composition API with `<script setup>`
+- Single-word component names are allowed (unlike default Vue rules)
+- Icons: Import from `~icons/mdi/{icon-name}` using unplugin-icons
+- Example:
+  ```vue
+  <script setup>
+  import IconSync from '~icons/mdi/sync';
+  </script>
+  ```
 
-```sh
-yarn                    # Install dependencies
-yarn dev               # Watch and compile (auto-rebuild)
-```
+### Internationalization (i18n)
 
-Load extension from `dist/` directory in browser.
+- **ALWAYS add i18n keys** for user-facing strings
+- Keys go in `src/_locales/en/messages.yml`
+- Run `yarn i18n` to update locale files
+- Never hardcode English strings in UI components
+- Use `i18n()` function to get translated strings
 
-### Building
+### Security - Non-Negotiable
 
-```sh
-yarn build             # Production build
-yarn build:selfHosted  # Self-hosted build with update_url
-```
+When working with injected scripts:
 
-### Testing
-
-```sh
-yarn test              # Run Jest tests
-yarn lint              # Lint JavaScript and YAML
-yarn ci                # Run lint + test (CI pipeline)
-```
-
-### Internationalization
-
-```sh
-yarn i18n              # Update locale files from templates
-yarn copyI18n          # Copy locales to dist/
-```
-
-### Version Management
-
-```sh
-yarn bump              # Increment beta, commit, and tag
-```
-
-See `RELEASE.md` for release workflow.
-
-## Key Concepts
-
-### Userscripts
-
-JavaScript programs that run on web pages matching specified URL patterns. Defined by metadata block with directives like `@match`, `@require`, `@grant`.
-
-### WebExtensions
-
-Cross-browser extension API. Violentmonkey uses:
-- `browser_action`: Extension icon and popup
-- `background`: Service worker for persistent logic
-- `content_scripts`: Scripts injected into pages
-- Permissions: tabs, webRequest, storage, cookies, etc.
-
-### Injection Contexts
-
-1. **Background**: Full extension API access, no page access
-2. **Content**: Limited extension API, isolated from page globals
-3. **Web**: Full page access, no extension API, where userscripts run
-
-### Safe Globals
-
-`src/common/safe-globals-shared.js` defines globals safe from page tampering. Critical for security in injected context.
+1. **NEVER expose browser APIs** to userscripts
+2. **ALWAYS use safe globals** to prevent page script tampering
+3. **VALIDATE all user input** especially script metadata
+4. **SANITIZE before rendering** user-provided content
+5. **ASSUME page context is hostile** in web injected scripts
 
 ### Build System
 
-- **Gulp**: Orchestrates tasks (icons, i18n, manifest)
-- **Webpack**: Bundles JavaScript, handles Vue SFC, transpiles with Babel
-- **Manifest**: YAML source (`src/manifest.yml`) converted to JSON
+- **Gulp** handles icons, i18n, and manifest generation
+- **Webpack** bundles JavaScript and Vue components
+- `src/manifest.yml` is source of truth for manifest - never edit `dist/manifest.json` directly
+- Run `yarn dev` for development with auto-rebuild
+- Run `yarn build` for production builds
 
-## Common Patterns
+### Dependencies
 
-### Vue Components
+- **Node.js**: Must use version >=20 (check `package.json` engines)
+- **Package Manager**: Yarn v1.x only
+- **NEVER use npm** - this project uses `yarn.lock`
+- Install dependencies: `yarn` (not `yarn install`)
 
-```vue
-<script setup>
-import { ref, computed } from 'vue';
-import IconSync from '~icons/mdi/sync';
+## Architecture Understanding Required
 
-const count = ref(0);
-</script>
+Before making changes, understand these concepts:
 
-<template>
-  <IconSync />
-  <div>{{ count }}</div>
-</template>
-```
+### Three Execution Contexts
 
-### Message Passing
+1. **Background** (`src/background/`): Service worker, full extension API, manages storage/sync/updates
+2. **Content** (`src/injected/content/`): Bridges page and background, limited extension API
+3. **Web** (`src/injected/web/`): Runs userscripts in page context, no extension API access
 
-Background and content scripts communicate via `browser.runtime.sendMessage` / `onMessage`.
+Message passing flows: Background ↔ Content ↔ Web
 
-### Storage
+### Directory Purpose
 
-Uses `browser.storage.local` for scripts and settings. Sync integrations for cloud backup.
+- `src/background/`: Extension background logic, storage, sync, updates
+- `src/injected/content/`: Content script bridge
+- `src/injected/web/`: Userscript execution environment
+- `src/options/`: Dashboard and script editor
+- `src/popup/`: Browser action popup
+- `src/confirm/`: Script installation confirmation
+- `src/common/`: Shared utilities and Vue components
 
-## Testing
+## Common Mistakes to Avoid
 
-- **Environment**: Custom JSDOM-based environment (`test/mock/env.js`)
-- **Setup**: `test/mock/index.js` for global mocks
-- **Location**: Tests in `test/` directory
+### DO NOT:
 
-## Security Considerations
+- ❌ Use tabs for indentation (use 2 spaces)
+- ❌ Import common modules in injected scripts
+- ❌ Edit files without reading them first
+- ❌ Skip running `yarn ci` before committing
+- ❌ Hardcode English strings (use i18n)
+- ❌ Use npm or npm commands
+- ❌ Edit `dist/manifest.json` directly
+- ❌ Expose browser APIs to userscripts
+- ❌ Commit without testing
+- ❌ Add double quotes (use single quotes)
+- ❌ Skip semicolons
+- ❌ Use RegExp in web context without understanding restrictions
 
-- **Sandboxing**: Injected scripts avoid exposing browser APIs to userscripts
-- **Safe Globals**: Defensive coding against page script tampering
-- **CSP**: Content Security Policy restrictions in web context
-- **Input Validation**: Sanitize user-provided script metadata
+### DO:
 
-## Build Artifacts
+- ✅ Read existing code to understand patterns
+- ✅ Follow ESLint rules strictly
+- ✅ Run `yarn ci` before every commit
+- ✅ Add tests for new features
+- ✅ Use i18n for all user-facing strings
+- ✅ Check git log for commit message style
+- ✅ Use safe globals in injected contexts
+- ✅ Import icons from `~icons/mdi/`
+- ✅ Use Vue 3 Composition API
+- ✅ Validate security in injected scripts
 
-Generated in `dist/`:
-- `manifest.json`: Extension manifest
-- `public/`: Icons and static assets
-- `*.js`: Bundled scripts
-- `_locales/`: Locale files
+## Development Workflow
 
-## Contributing
+1. **Setup**: `yarn` to install dependencies
+2. **Develop**: `yarn dev` for auto-rebuild during development
+3. **Lint**: `yarn lint` to check code style
+4. **Test**: `yarn test` to run test suite
+5. **Verify**: `yarn ci` to run full CI checks
+6. **Build**: `yarn build` for production build
 
-1. Follow existing code style (enforced by ESLint)
-2. Update tests for new features
-3. Run `yarn ci` before committing
-4. Maintain i18n keys in `src/_locales/en/messages.yml`
-5. Use conventional commit messages matching repository history
+## Required Knowledge
 
-## External Dependencies
+### Vue 3 Patterns Used
 
-- **@violentmonkey/shortcut**: Keyboard shortcut handling
-- **@zip.js/zip.js**: ZIP archive handling for import/export
-- **CodeMirror**: Script editor with syntax highlighting
-- **tldts**: Top-level domain parsing
-- **vue/vueleton**: UI framework and utilities
+- Composition API with `<script setup>`
+- Reactivity: `ref()`, `computed()`, `watch()`
+- Component communication via props and emits
+- Shared state via composition functions
 
-## Browser Compatibility
+### WebExtensions APIs Used
 
-- **Chrome**: >= 61.0
-- **Firefox**: >= 58.0
-- **Edge**: Chromium-based versions
-- **Manifest Version**: 2 (v3 migration planned)
+- `browser.runtime`: Message passing, extension info
+- `browser.storage.local`: Persistent storage
+- `browser.tabs`: Tab information and management
+- `browser.webRequest`: Request interception
+- `browser.notifications`: User notifications
 
-## Resources
+### Build Tools
 
-- **Homepage**: https://violentmonkey.github.io/
-- **Repository**: https://github.com/violentmonkey/violentmonkey
-- **Discord**: https://discord.gg/XHtUNSm6Xc
-- **Chrome Web Store**: violentmonkey extension
-- **Firefox AMO**: violentmonkey add-on
-- **Edge Add-ons**: violentmonkey extension
+- Webpack 5 with Vue Loader
+- Babel for transpilation
+- PostCSS for CSS processing
+- Gulp for task automation
+- Jest for testing
+
+## When in Doubt
+
+1. **Check existing code** - find similar features and follow those patterns
+2. **Check git history** - `git log` shows how things were done before
+3. **Check ESLint config** - `.eslintrc.js` has context-specific rules explained
+4. **Check manifest** - `src/manifest.yml` shows extension structure
+5. **Ask questions** - don't assume, verify by reading relevant files
+
+## Critical Files to Understand
+
+- `.editorconfig`: Code formatting rules
+- `.eslintrc.js`: Linting rules and context restrictions
+- `package.json`: Scripts, dependencies, Node version requirement
+- `src/manifest.yml`: Extension manifest source
+- `src/common/safe-globals-shared.js`: Secure globals for injected context
+
+## Quality Standards
+
+All code changes must:
+
+1. Pass `yarn lint` without errors or warnings
+2. Pass `yarn test` with all tests passing
+3. Follow existing code style exactly
+4. Include tests for new functionality
+5. Use i18n for user-facing strings
+6. Preserve security in injected contexts
+7. Work in all supported browsers (Chrome >=61, Firefox >=58)
+
+## Remember
+
+This is a **browser extension** that executes **untrusted userscripts**. Security is paramount. When modifying injected scripts, always assume the page context is hostile and guard against tampering.
