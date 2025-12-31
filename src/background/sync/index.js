@@ -16,6 +16,7 @@ import './dropbox';
 import './googledrive';
 import './onedrive';
 import './webdav';
+import './local-folder';
 
 const keysToSyncRe = new RegExp(`^(?:${[S_SCRIPT_PRE, S_CODE_PRE].join('|')})`);
 let unwatch;

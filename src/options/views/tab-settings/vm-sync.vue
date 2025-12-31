@@ -30,6 +30,18 @@
           :disabled="!rCanRevoke"
           @click="onRevoke"
         />
+        <button
+          v-text="rLabelAuthorize"
+          v-if="rAuthType === 'folder'"
+          :disabled="!rCanAuthorize"
+          @click="onAuthorize"
+        />
+        <button
+          v-text="i18n('labelSyncRevoke')"
+          v-if="rAuthType === 'folder'"
+          :disabled="!rCanRevoke"
+          @click="onRevoke"
+        />
       </div>
       <div v-if="rService" class="flex">
         <tooltip :content="i18n('labelSync')" class="stretch-self flex">
