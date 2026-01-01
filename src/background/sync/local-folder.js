@@ -1,16 +1,18 @@
 /**
- * Local Folder Sync Provider - Complete Hybrid Implementation
+ * Local Folder Sync Provider
  *
- * Combines browser.storage.sync for metadata with File System Access API
- * for script content, enabling integration with OneDrive for Business and
- * other enterprise file sync solutions.
+ * Uses the File System Access API to sync scripts to a local folder.
+ * This enables integration with cloud sync solutions like OneDrive, Dropbox,
+ * or Google Drive when pointing to a synced folder.
  *
  * Features:
- * - Hybrid storage: metadata in browser.storage.sync, content in local folder
- * - Three-way conflict resolution (local, remote metadata, file)
+ * - Folder selection via File System Access API
+ * - Script sync to/from local folder using BaseService sync logic
  * - File watcher for detecting external changes
- * - Cross-browser metadata sync via browser profile
- * - Comprehensive error handling
+ * - Persistent folder handle via IndexedDB
+ *
+ * Note: This is a simplified implementation. The scripts are stored as files
+ * in the selected folder, similar to other sync providers like Dropbox.
  */
 
 import { BaseService, getItemFilename, getURI, isScriptFile, register } from './base';

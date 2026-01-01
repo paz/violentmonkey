@@ -190,13 +190,6 @@ async function checkForChanges() {
 }
 
 /**
- * Force immediate check for changes
- */
-export async function checkNow() {
-  await checkForChanges();
-}
-
-/**
  * Check if filename is a script file
  */
 function isScriptFile(name) {
@@ -234,15 +227,4 @@ async function getStoredHandle() {
       getRequest.onsuccess = () => resolve(getRequest.result);
     };
   });
-}
-
-/**
- * Get current watcher status
- */
-export function getWatcherStatus() {
-  return {
-    running: !!intervalId,
-    filesTracked: lastKnownState.size,
-    hasFolder: !!directoryHandle,
-  };
 }

@@ -166,7 +166,6 @@ import {
 import {
   selectFolder,
   revokeFolder,
-  checkFolderAccess,
 } from '../../utils/local-folder-helper';
 
 const SYNC_CURRENT = 'sync.current';
