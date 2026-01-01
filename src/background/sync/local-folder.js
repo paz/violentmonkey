@@ -189,38 +189,39 @@ const LocalFolder = BaseService.extend({
    */
   async requestAuth() {
     if (!this.directoryHandle) {
-      // Try to restore handle
+      // Try to restore handle from IndexedDB
       try {
         const handle = await this._getStoredHandle();
         if (handle) {
-          const hasPermission = await this._checkPermission(handle);
-          if (hasPermission) {
-            this.directoryHandle = handle;
+          // Store the handle - permission will be checked on actual file operations
+          // Background scripts can't always query permission accurately
+          this.directoryHandle = handle;
 
-            // Start watcher and metadata listener
-            if (this.config.get('watchFiles') !== false) {
-              this._startWatcher();
-            }
-            this._startMetadataListener();
-
-            return { code: 0 }; // INIT_SUCCESS
+          // Start watcher and metadata listener if configured
+          if (this.config.get('watchFiles') !== false) {
+            this._startWatcher();
           }
+          this._startMetadataListener();
+
+          console.info('[LocalFolder] Restored folder handle from storage');
+          return { code: 0 }; // INIT_SUCCESS
         }
       } catch (error) {
         logError(error, 'requestAuth');
       }
+
+      // No handle found - check if config says we should be authorized
+      if (this.config.get('authorized')) {
+        // Config says authorized but no handle - might be a race condition
+        // or handle was cleared. Let sync proceed, operations will fail gracefully.
+        console.info('[LocalFolder] Config authorized but no handle found');
+        return { code: 0 }; // INIT_SUCCESS - let operations fail with specific errors
+      }
+
       return { code: 1 }; // INIT_UNAUTHORIZED
     }
 
-    // Check if we still have permission
-    const hasPermission = await this._checkPermission(this.directoryHandle);
-    if (!hasPermission) {
-      const granted = await this._requestPermission(this.directoryHandle);
-      if (!granted) {
-        return { code: 1 }; // INIT_UNAUTHORIZED
-      }
-    }
-
+    // Already have a handle
     return { code: 0 }; // INIT_SUCCESS
   },
 
@@ -479,4 +480,4 @@ const LocalFolder = BaseService.extend({
 
 // Register the provider
 register(LocalFolder);
-console.info('[LocalFolder] Hybrid sync provider registered');
+console.info('[LocalFolder] Sync provider registered');
