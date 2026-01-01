@@ -15,23 +15,16 @@
 
 import { BaseService, getItemFilename, getURI, isScriptFile, register } from './base';
 import {
-  loadMetadata,
-  saveMetadata,
-  buildScriptMetadata,
-  hashContent,
   onMetadataChanged,
   clearMetadata,
 } from './local-folder-metadata';
 import {
   startFileWatcher,
   stopFileWatcher,
-  checkNow as checkFilesNow,
 } from './local-folder-watcher';
 import {
   handleError,
   logError,
-  ErrorCodes,
-  getUserMessage,
 } from './local-folder-errors';
 
 const DB_NAME = 'violentmonkey-local-sync';
@@ -356,7 +349,7 @@ const LocalFolder = BaseService.extend({
     console.info('[LocalFolder] File watcher stopped');
   },
 
-  async _handleExternalChanges(changes) {
+  async _handleExternalChanges() {
     // Trigger a sync to reconcile external changes
     try {
       await this.sync();
@@ -372,10 +365,10 @@ const LocalFolder = BaseService.extend({
   _startMetadataListener() {
     if (this.metadataUnsubscribe) return;
 
-    this.metadataUnsubscribe = onMetadataChanged((newMetadata, oldMetadata) => {
+    this.metadataUnsubscribe = onMetadataChanged(() => {
       console.info('[LocalFolder] Metadata changed from another browser');
       // Trigger auto-sync to reconcile metadata changes
-      this._handleMetadataChange(newMetadata, oldMetadata);
+      this._handleMetadataChange();
     });
 
     console.info('[LocalFolder] Metadata listener started');
@@ -389,7 +382,7 @@ const LocalFolder = BaseService.extend({
     }
   },
 
-  async _handleMetadataChange(newMetadata, oldMetadata) {
+  async _handleMetadataChange() {
     // Trigger a sync to reconcile metadata changes
     try {
       await this.sync();
